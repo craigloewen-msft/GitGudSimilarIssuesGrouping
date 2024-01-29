@@ -1,0 +1,9 @@
+pymongo
+pinecone-client
+scikit-learn
+matplotlib
+numpy
+seaborn
+plotly
+pandas
+dash

@@ -1,0 +1,5 @@
+{
+    "devMongoDBConnectionString": "mongodb://[USERNAME]:[PASSWORD]@[ENDPOINT]/[DBNAME]?authSource=admin", 
+    "pineconeAPIKey": "[GENERATED_KEY]",
+    "pineconeIndexURL": "[GENERATED_URL]"
+}
