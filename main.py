@@ -1,40 +1,43 @@
 from pymongo import MongoClient
-from pinecone import Pinecone
-from sklearn.cluster import AgglomerativeClustering
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-from sklearn.manifold import TSNE
-from tkinter import Tk, Canvas, Frame, Scrollbar
 import json
-from datetime import datetime, timedelta
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objs as go
-import dash
-import dash_core_components as dcc
-import dash_html_components as html
-from dash.dependencies import Input, Output, State
-import plotly.io as pio
+import tiktoken
+from datetime import datetime
+import matplotlib.pyplot as plt
+import math
 
 repoShortURL = 'microsoft/powertoys'
-startingQueryDate = datetime(2024, 1, 1)
-numberOfClusters = 7
+startingQueryDate = datetime(2023, 1, 1)
+percentBelowTokenNumber = 1024
+tokenLengthToExcludeFromView = 1500
+allowListLabels = [
+    'Area-Accessibility',
+    'Area-App Compat',
+    'Area-Bug Report Tool',
+    'Area-Build',
+    'Area-Context Menu', 'Area-Enterprise', 'Area-Flyout', 'Area-GitHub workflow', 'Area-Localization', 'Area-Logging', 'Area-Module interface', 'Area-OOBE', 'Area-Project Template', 'Area-Quality', 'Area-Runner', 'Area-Setup/Install', 'Area-Telemetry', 'Area-Tests', 'Area-User Interface',
+    'FancyZones-Dragging&UI', 'FancyZones-Editor', 'FancyZones-Hotkeys', 'FancyZones-Layouts', 'FancyZones-Settings', 'FancyZones-VirtualDesktop',
+    'Idea-Enhancement', 'Issue-Docs', 'Issue-Feature', 'Issue-Translation',
+    'Product-Always On Top', 'Product-Awake', 'Product-Color Picker', 'Product-CommandNotFound', 'Product-CropAndLock', 'Product-Display management', 'Product-Environment Variables', 'Product-FancyZones', 'Product-File Explorer', 'Product-File Locksmith', 'Product-Hosts File Editor', 'Product-Image Resizer', 'Product-Keyboard Shortcut Manager', 'Product-Mouse Utilities', 'Product-Mouse Without Borders', 'Product-Paste as plain text', 'Product-Peek', 'Product-Power management', 'Product-PowerRename', 'Product-PowerToys Run', 'Product-Quick Accent', 'Product-Registry Preview', 'Product-Screen Ruler',
+    'Product-Settings', 'Product-Shortcut Guide', 'Product-Text Extractor', 'Product-Tweak UI Design', 'Product-Video Conference Mute', 'Product-Virtual Desktop', 'Product-Window Manager',
+    'Run-Plugin Manager', 'Run-Plugin', 'Severity-Crash',
+    'Issue-Bug'
+]
 
-# Create Dash application
-app = dash.Dash(__name__)
+allowListLabelsString = ','.join(allowListLabels)
 
 # Read configurations from config.json
 with open('config.json', 'r') as f:
     config = json.load(f)
 
 # Step 1: Connect to MongoDB and retrieve the repository ID and issue list
+
+
 def get_repository_id_and_issue_list(repo_name):
     client = MongoClient(config['devMongoDBConnectionString'])
     db = client['GithubIssueManagement']
-    
+
     print("Getting repo id and issue list")
-    
+
     # Retrieve repository ID
     repo_collection = db['repoInfo']
     repo_result = repo_collection.find_one({'shortURL': repo_name})
@@ -52,119 +55,108 @@ def get_repository_id_and_issue_list(repo_name):
 
     return repo_id, issue_dict
 
-# Step 2: Connect to Pinecone and retrieve all embedding values for each issue
-def get_embedding_values(issue_list, repository_id):
-    pinecone = Pinecone(api_key=config['pineconeAPIKey'])
-    index = pinecone.Index(host=config['pineconeIndexURL'])
+# Credit to stack overflow https://stackoverflow.com/questions/75804599/openai-api-how-do-i-count-tokens-before-i-send-an-api-request
 
-    batchSize = 1000
-    batchArray = []
 
-    for issue_id in issue_list:
-        batchArray.append(issue_id)
+def getTokenCountFromString(string, encoding_name):
+    """
+    Returns the number of tokens in a text string.
+    """
+    encoding = tiktoken.get_encoding(encoding_name)
+    num_tokens = len(encoding.encode(string))
+    return num_tokens
 
-        if len(batchArray) == batchSize:
-            print("Fetching embeddings...")
-            batch_embeddings = index.fetch(ids=batchArray, namespace=str(repository_id))
 
-            for embedding_issue_id, embedding_value in batch_embeddings['vectors'].items():
-                issue = issue_list[embedding_issue_id]
-                issue['embedding'] = embedding_value.values
+def addTokenCountToIssues(issueList):
 
-            batchArray = []
+    for issueID in issueList:
+        issue = issueList[issueID]
 
-    if len(batchArray) > 0:
-        print("Fetching embeddings...")
-        batch_embeddings = index.fetch(ids=batchArray, namespace=str(repository_id))
+        try:
+            tokenLength = getTokenCountFromString(
+                '===Labels to choose from===\n' + allowListLabelsString + '\n\n'
+                '===Issue Details===\n' +
+                '#' + issue['title'] + '\n' + issue['body'] + '\n\n'
+                + '===Labels to apply===\n',
+                "cl100k_base")
+        except:
+            tokenLength = 0
 
-        for embedding_issue_id, embedding_value in batch_embeddings['vectors'].items():
-            issue = issue_list[embedding_issue_id]
-            issue['embedding'] = embedding_value.values
+        issue["tokenLength"] = tokenLength
 
-    print("Done fetching embeddings!")
 
-# Step 3: Perform hierarchical clustering on embeddings
-def hierarchical_clustering(issue_list):
-    # Extract embeddings from each issue in the dictionary
-    embeddings = [issue['embedding'] for issue in issue_list.values()]
+def getProcessedDict(issueList):
 
-    clustering = AgglomerativeClustering(n_clusters=numberOfClusters)
-    cluster_labels = clustering.fit_predict(embeddings)
-    return embeddings, cluster_labels
+    processedDict = {}
 
-# Step 4: Visualize the clustering in an interactive GUI window
+    for issueID in issueList:
+        issue = issueList[issueID]
+        # For each item in issue['labels'] dictionary, put its name value into a comma separated list
+        originalLabelList = [label['name'] for label in issue['labels']]
 
-def visualize_clustering(embeddingsList, cluster_labels, issue_list):
-    tsne = TSNE(n_components=2)
-    embeddings = np.array(embeddingsList)
-    embeddings_2d = tsne.fit_transform(embeddings)
+        # Filter labelList to only have allow listed labels
+        labelList = list(
+            filter(lambda x: x in allowListLabels, originalLabelList))
+        labelListString = ','.join(labelList)
 
-    # Add issue title and html_url to DataFrame
-    df = pd.DataFrame(embeddings_2d, columns=['Dimension 1', 'Dimension 2'])
-    df['Cluster'] = cluster_labels
-    df['Title'] = [issue['title'] for issue in issue_list.values()]
-    df['Number'] = [issue['number'] for issue in issue_list.values()]
+        if (len(labelList) > 0 and issue['tokenLength'] > 0):
+            processedDict[issueID] = {
+                "title": issue['title'],
+                "body": issue['body'],
+                "labels": labelListString,
+                "tokenLength": issue['tokenLength']
+            }
 
-    fig = px.scatter(df, x='Dimension 1', y='Dimension 2', color='Cluster', hover_data=['Title'], custom_data=['Number', 'Title'])
+    return processedDict
 
-    fig.update_traces(
-        hovertemplate="<b>%{customdata[1]}</b><br>Number: %{customdata[0]}",
-        marker=dict(size=10)
-    )
 
-    fig.layout.hovermode = 'closest'
-    fig.layout.clickmode = 'event+select'
-
-    # Get unique clusters
-    unique_clusters = df['Cluster'].unique()
-
-    # Define layout
-    app.layout = html.Div([
-        dcc.Graph(figure=fig, id='main-graph'),
-        html.Div([html.Button(f'Filter {cluster}', id=f'filter-{cluster}', n_clicks=0) for cluster in unique_clusters], id='filter-buttons'),
-        html.Button('Clear', id='clear-button', n_clicks=0),
-        html.Div(id='cluster-info'),
-    ])
-
-    # Define callback for filter buttons
-    @app.callback(
-        Output('main-graph', 'figure'),
-        Output('cluster-info', 'children'),
-        [Input(f'filter-{cluster}', 'n_clicks') for cluster in unique_clusters] +
-        [Input('clear-button', 'n_clicks')],
-        [State('main-graph', 'figure')]
-    )
-    def update_graph(*args):
-        ctx = dash.callback_context
-        if not ctx.triggered:
-            return dash.no_update
+def getPercentBelowTokenLength(issue_list, inTokenLength):
+    tokenLengthList = [issue_list[issueID]['tokenLength']
+                       for issueID in issue_list]
+    tokenLengthList.sort()
+    percentBelowTokenValue = 0
+    for tokenValue in tokenLengthList:
+        if tokenValue <= inTokenLength:
+            percentBelowTokenValue += 1
         else:
-            button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+            break
 
-        if 'clear' in button_id:
-            fig = px.scatter(df, x='Dimension 1', y='Dimension 2', color='Cluster', hover_data=['Title'], custom_data=['Number', 'Title'])
-        else:
-            cluster = int(button_id.split('-')[1])
-            df_filtered = df[df['Cluster'] == cluster]
-            fig = px.scatter(df_filtered, x='Dimension 1', y='Dimension 2', color='Cluster', hover_data=['Title'], custom_data=['Number', 'Title'])
+    percentileIndex = round(percentBelowTokenValue *
+                            1.0 / len(tokenLengthList) * 100, 2)
 
-        # Calculate number of issues in each cluster
-        cluster_counts = df['Cluster'].value_counts().to_dict()
-        cluster_info = [html.P(f'Cluster {cluster}: {count} issues') for cluster, count in cluster_counts.items()]
+    return percentileIndex
 
-        pio.write_html(fig, 'plot.html')
 
-        return fig, cluster_info
+def showHistogramPlotOfTokenLength(issue_list):
+    # ignore any tokens above tokenLengthToExcludeFromView
+    tokenLengthList = [issue_list[issueID]['tokenLength']
+                       for issueID in issue_list if issue_list[issueID]['tokenLength'] < tokenLengthToExcludeFromView]
+    numberOfIgnored = len([issue_list[issueID]['tokenLength']
+                          for issueID in issue_list if issue_list[issueID]['tokenLength'] >= tokenLengthToExcludeFromView])
+    print("Number of tokens ignored: ", numberOfIgnored)
+    plt.hist(tokenLengthList, bins=20)
+    plt.show()
 
-    app.run_server(debug=False)
+
+def exportToJSON(processedDict):
+    with open('dataset-classification.json', 'w') as f:
+        for entry in processedDict.values():
+            f.write(json.dumps(entry) + '\n')
 
 # Main function
+
+
 def main():
     repository_name = repoShortURL
-    repository_id, issue_list = get_repository_id_and_issue_list(repository_name)
-    get_embedding_values(issue_list, repository_id)
-    embeddings, cluster_labels = hierarchical_clustering(issue_list)
-    visualize_clustering(embeddings, cluster_labels, issue_list)
+    repository_id, issue_list = get_repository_id_and_issue_list(
+        repository_name)
+    addTokenCountToIssues(issue_list)
+    processedDict = getProcessedDict(issue_list)
+    print("Percent below: ", getPercentBelowTokenLength(
+        issue_list, percentBelowTokenNumber))
+    showHistogramPlotOfTokenLength(issue_list)
+    exportToJSON(processedDict)
+
 
 if __name__ == "__main__":
     main()
