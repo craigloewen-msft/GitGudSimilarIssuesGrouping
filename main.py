@@ -32,7 +32,7 @@ with open('config.json', 'r') as f:
 # Step 1: Connect to MongoDB and retrieve the repository ID and issue list
 
 
-def get_repository_id_and_issue_list(repo_name):
+def get_repository_id_and_issue_list(repo_name, inStartingQueryDate):
     client = MongoClient(config['devMongoDBConnectionString'])
     db = client['GithubIssueManagement']
 
@@ -47,7 +47,7 @@ def get_repository_id_and_issue_list(repo_name):
     issue_collection = db['issueInfo']
     issues = issue_collection.find({
         'repoRef': repo_id,
-        'created_at': {'$gt': startingQueryDate}
+        'created_at': {'$gt': inStartingQueryDate}
     })
 
     # Change issue_list to a dictionary
@@ -76,7 +76,7 @@ def addTokenCountToIssues(issueList):
             tokenLength = getTokenCountFromString(
                 '===Labels to choose from===\n' + allowListLabelsString + '\n\n'
                 '===Issue Details===\n' +
-                '#' + issue['title'] + '\n' + issue['body'] + '\n\n'
+                '# ' + issue['title'] + '\n' + issue['body'] + '\n\n'
                 + '===Labels to apply===\n',
                 "cl100k_base")
         except:
@@ -99,10 +99,9 @@ def getProcessedDict(issueList):
             filter(lambda x: x in allowListLabels, originalLabelList))
         labelListString = ','.join(labelList)
 
-        if (len(labelList) > 0 and issue['tokenLength'] > 0):
+        if (len(labelList) > 0 and issue['tokenLength'] > 0 and issue['tokenLength'] < 1000):
             processedDict[issueID] = {
-                "title": issue['title'],
-                "body": issue['body'],
+                "issueDescription": '# ' + issue['title'] + '\n' + issue['body'],
                 "labels": labelListString,
                 "tokenLength": issue['tokenLength']
             }
@@ -143,13 +142,16 @@ def exportToJSON(processedDict):
         for entry in processedDict.values():
             f.write(json.dumps(entry) + '\n')
 
+def exportToPrettyJSON(processedDict):
+    formattedObject = [processedDict[issueID] for issueID in processedDict]
+    with open('issue_data.json', 'w') as f:
+        f.write(json.dumps(formattedObject, indent=4))
+
 # Main function
-
-
 def main():
     repository_name = repoShortURL
     repository_id, issue_list = get_repository_id_and_issue_list(
-        repository_name)
+        repository_name, startingQueryDate)
     addTokenCountToIssues(issue_list)
     processedDict = getProcessedDict(issue_list)
     print("Percent below: ", getPercentBelowTokenLength(
@@ -157,6 +159,15 @@ def main():
     showHistogramPlotOfTokenLength(issue_list)
     exportToJSON(processedDict)
 
+def getTrainingIssues():
+    repository_name = repoShortURL
+    issueQueryDate = datetime(2024, 2, 21)
+    repository_id, issue_list = get_repository_id_and_issue_list(
+        repository_name, issueQueryDate)
+    addTokenCountToIssues(issue_list)
+    processedDict = getProcessedDict(issue_list)
+    exportToPrettyJSON(processedDict)
 
 if __name__ == "__main__":
-    main()
+    # main()
+    getTrainingIssues()
