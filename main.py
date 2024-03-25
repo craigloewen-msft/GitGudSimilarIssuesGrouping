@@ -6,9 +6,10 @@ import matplotlib.pyplot as plt
 import math
 
 repoShortURL = 'microsoft/powertoys'
-startingQueryDate = datetime(2023, 1, 1)
+startingQueryDate = datetime(2019, 1, 1)
 percentBelowTokenNumber = 1024
 tokenLengthToExcludeFromView = 1500
+allowListEnabled = True
 allowListLabels = [
     'Area-Accessibility',
     'Area-App Compat',
@@ -22,6 +23,12 @@ allowListLabels = [
     'Run-Plugin Manager', 'Run-Plugin', 'Severity-Crash',
     'Issue-Bug'
 ]
+
+
+# allowListLabelsWSL = [
+#     'ARM','bug','bydesign','console','discussion','distro-mgmt','documentation','enhancement','external','failure-to-launch','feature','file system','fixed-in-wsl2','GPU',
+#     'hypervisor-platform','inbox','install','interop','kconfig','kernel','launcher','localization','msix','network','systemd','wsl1','wsl2'
+# ]
 
 allowListLabelsString = ','.join(allowListLabels)
 
@@ -95,11 +102,18 @@ def getProcessedDict(issueList):
         originalLabelList = [label['name'] for label in issue['labels']]
 
         # Filter labelList to only have allow listed labels
-        labelList = list(
-            filter(lambda x: x in allowListLabels, originalLabelList))
-        labelListString = ','.join(labelList)
+        if allowListEnabled:
+            labelList = list(
+                filter(lambda x: x in allowListLabels, originalLabelList))
+        else:
+            labelList = originalLabelList
 
-        if (len(labelList) > 0 and issue['tokenLength'] > 0 and issue['tokenLength'] < 1000):
+        if len(labelList) > 0:
+            labelListString = ','.join(labelList)
+        else:
+            labelListString = '<None>'
+
+        if (issue['tokenLength'] > 0 and issue['tokenLength'] < 1000):
             processedDict[issueID] = {
                 "issueDescription": '# ' + issue['title'] + '\n' + issue['body'],
                 "labels": labelListString,
@@ -161,7 +175,7 @@ def main():
 
 def getTrainingIssues():
     repository_name = repoShortURL
-    issueQueryDate = datetime(2024, 2, 21)
+    issueQueryDate = datetime(2024, 3, 10)
     repository_id, issue_list = get_repository_id_and_issue_list(
         repository_name, issueQueryDate)
     addTokenCountToIssues(issue_list)
@@ -169,5 +183,5 @@ def getTrainingIssues():
     exportToPrettyJSON(processedDict)
 
 if __name__ == "__main__":
-    # main()
+    main()
     getTrainingIssues()
